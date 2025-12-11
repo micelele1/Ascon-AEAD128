@@ -42,6 +42,18 @@ ARCHITECTURE Structural OF System_Top IS
     SIGNAL w_valid_mux   : STD_LOGIC;
     SIGNAL w_type_mux    : STD_LOGIC_VECTOR(3 DOWNTO 0);
 
+    -- SIGNAL SANITIZER FUNCTION
+    -- Converts any input to a definite '0' or '1'.
+    -- 'U', 'X', 'Z' are treated as '0'.
+    function safe_logic(input : std_logic) return boolean is
+    begin
+        if (to_x01(input) = '1') then
+            return true;
+        else
+            return false;
+        end if;
+    end function;
+
 BEGIN
 
     -- 1. NONCE GENERATOR
@@ -57,18 +69,17 @@ BEGIN
     );
 
     -- 2. SAFE MULTIPLEXER PROCESS
-    -- Perbaikan: Menggunakan perbandingan langsung (= '1') yang sudah "safe" secara logic
+    -- Uses a process for clearer control over priority and 'U' signal handling
     process(w_nonce_valid, w_nonce_data, ext_data_in, ext_valid_in, bdi_type)
     begin
-        -- Jika w_nonce_valid bernilai '1' (Strict High), gunakan jalur Nonce
-        if (w_nonce_valid = '1') then
+        -- Check if Nonce Valid is strictly '1'
+        if safe_logic(w_nonce_valid) then
             -- Internal Mode (Nonce)
             w_bdi_mux   <= w_nonce_data;
             w_valid_mux <= '1';
             w_type_mux  <= "0010"; -- Header Type: Nonce (NPUB)
         else
             -- External Mode (User Input)
-            -- Jika w_nonce_valid bernilai '0', 'U', 'X', dll, masuk ke sini
             w_bdi_mux   <= ext_data_in;
             w_valid_mux <= ext_valid_in;
             w_type_mux  <= bdi_type;
@@ -110,15 +121,14 @@ BEGIN
         msg_auth        => OPEN
     );
 
-    -- 4. OUTPUT DRIVER (Safe Logic Manual)
-    -- Menggunakan conditional signal assignment standar VHDL
-    
-    ready_out <= '0' when (rst = '1') else           -- Reset: Ready 0
-                 '0' when (w_nonce_valid = '1') else -- Nonce Busy: Ready 0
-                 w_core_ready;                       -- Normal: Follow Core
+    -- 4. OUTPUT DRIVER (Safe Logic for Ready Out)
+    -- Prevents Ready from being 'U' during reset or when w_nonce_valid is 'U'
+    ready_out <= '0' when safe_logic(rst) else          -- Reset: Ready 0
+                 '0' when safe_logic(w_nonce_valid) else -- Nonce Busy: Ready 0
+                 w_core_ready;                           -- Normal: Follow Core
 
     -- Output Data & Valid
-    data_out  <= (OTHERS => '0') when (rst = '1') else w_core_data;
-    valid_out <= '0'             when (rst = '1') else w_core_valid;
+    data_out  <= (OTHERS => '0') when safe_logic(rst) else w_core_data;
+    valid_out <= '0'             when safe_logic(rst) else w_core_valid;
 
 END Structural;
