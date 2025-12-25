@@ -3,11 +3,7 @@ from discord import app_commands
 from uart import send_to_fpga
 import secrets
 
-<<<<<<< HEAD
 TOKEN = "SECRET" #nanti dimasukin pas mau run
-=======
-TOKEN = "MTQ1MTQzNzYwNjA3MDkxMTEwOA.GTySLg.5o5OwLiyx94DL6odGM4ZoGfwrTO70BXIMJ5aTc"
->>>>>>> parent of a152294 (update bot to run without fpga)
 
 class CryptoBot(discord.Client):
     def __init__(self):
