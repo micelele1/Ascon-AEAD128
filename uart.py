@@ -1,16 +1,27 @@
 import serial
 import json
-import time
 
-SERIAL_PORT = "COM3"      # sesuaikan
+SERIAL_PORT = "COM3"
 BAUDRATE = 115200
+TIMEOUT = 2
 
-ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=2)
+class FPGAConnectionError(Exception):
+    pass
 
 def send_to_fpga(payload: dict) -> dict:
-    message = json.dumps(payload).encode("utf-8") + b"\n"
-    ser.write(message)
+    try:
+        ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=TIMEOUT)
+    except serial.SerialException:
+        raise FPGAConnectionError("FPGA not connected")
 
-    time.sleep(0.5)
-    response = ser.readline().decode("utf-8")
-    return json.loads(response)
+    try:
+        ser.write((json.dumps(payload) + "\n").encode())
+
+        response = ser.readline().decode().strip()
+        if not response:
+            raise FPGAConnectionError("No response from FPGA")
+
+        return json.loads(response)
+
+    finally:
+        ser.close()
