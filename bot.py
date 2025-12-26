@@ -1,20 +1,14 @@
 import discord
 from discord import app_commands
-from uart import send_to_fpga, FPGAConnectionError
 import secrets
 
-TOKEN = "SECRET" #nanti dimasukin pas mau run
+from uart import send_to_fpga, FPGAConnectionError, FPGAProtocolError
 
-def parse_kat_block(text: str) -> dict:
-    data = {}
+TOKEN = "SECRET"
 
-    for line in text.splitlines():
-        line = line.strip()
-        if "=" in line:
-            k, v = line.split("=", 1)
-            data[k.strip()] = v.strip()
+MODE_ENCRYPT = 0x01
+MODE_DECRYPT = 0x02
 
-    return data
 
 class CryptoBot(discord.Client):
     def __init__(self):
@@ -25,77 +19,125 @@ class CryptoBot(discord.Client):
     async def setup_hook(self):
         await self.tree.sync()
 
+
 bot = CryptoBot()
 
-@bot.tree.command(name="encrypt")
+
+def build_frame(mode: int, key: bytes, nonce: bytes, data: bytes) -> bytes:
+    if len(key) != 16 or len(nonce) != 16 or len(data) != 16:
+        raise ValueError("Key, nonce, and data must be 16 bytes")
+
+    frame = bytearray(64)
+    frame[0] = mode
+    frame[1:17] = key
+    frame[17:33] = nonce
+    frame[33:49] = data
+    # byte 49–63 otomatis 0x00
+    return bytes(frame)
+
+
+@bot.tree.command(name="encrypt", description="Encrypt plaintext using ASCON-AEAD128 (FPGA)")
 async def encrypt(
     interaction: discord.Interaction,
-    plaintext: str,
-    ad: str = ""
+    plaintext: str
 ):
-    key = secrets.token_hex(16)
-    nonce = secrets.token_hex(16)
+    key = secrets.token_bytes(16)
+    nonce = secrets.token_bytes(16)
 
-    payload = {
-        "mode": "encrypt",
-        "key": key,
-        "nonce": nonce,
-        "associated_data": ad.encode().hex(),
-        "plaintext": plaintext.encode().hex()
-    }
+    pt_bytes = plaintext.encode()
+    if len(pt_bytes) > 16:
+        await interaction.response.send_message(
+            "❌ Plaintext maksimal 16 byte",
+            ephemeral=True
+        )
+        return
+
+    pt_bytes = pt_bytes.ljust(16, b"\x00")
+
+    frame = build_frame(
+        MODE_ENCRYPT,
+        key,
+        nonce,
+        pt_bytes
+    )
 
     try:
-        result = send_to_fpga(payload)
-
+        response = send_to_fpga(frame)
     except FPGAConnectionError:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                "❌ **FPGA tidak terhubung**\n"
-                "Pastikan FPGA dan koneksi UART aktif sebelum enkripsi.",
-                ephemeral=True
-            )
+        await interaction.response.send_message(
+            "❌ FPGA tidak terhubung",
+            ephemeral=True
+        )
         return
+    except FPGAProtocolError as e:
+        await interaction.response.send_message(
+            f"❌ Protokol UART error: {e}",
+            ephemeral=True
+        )
+        return
+
+    ciphertext = response[33:49].hex()
 
     await interaction.response.send_message(
         f"🔐 **Encryption Result**\n"
-        f"CT = `{result['ciphertext']}{result['tag']}`"
+        f"Ciphertext: `{ciphertext}`\n"
+        f"Key: `{key.hex()}`\n"
+        f"Nonce: `{nonce.hex()}`"
     )
 
-@bot.tree.command(name="decrypt")
+
+@bot.tree.command(name="decrypt", description="Decrypt ciphertext using ASCON-AEAD128 (FPGA)")
 async def decrypt(
     interaction: discord.Interaction,
     ciphertext: str,
-    tag: str,
-    nonce: str,
     key: str,
-    ad: str = ""
+    nonce: str
 ):
-    payload = {
-        "mode": "decrypt",
-        "key": key,
-        "nonce": nonce,
-        "associated_data": ad.encode().hex(),
-        "ciphertext": ciphertext,
-        "tag": tag
-    }
-
     try:
-        result = send_to_fpga(payload)
-
-    except FPGAConnectionError:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                "❌ FPGA tidak terhubung.\nDekripsi tidak dapat dilakukan.",
-                ephemeral=True
-            )
+        ct_bytes = bytes.fromhex(ciphertext)
+        key_bytes = bytes.fromhex(key)
+        nonce_bytes = bytes.fromhex(nonce)
+    except ValueError:
+        await interaction.response.send_message(
+            "❌ Format hex tidak valid",
+            ephemeral=True
+        )
         return
 
-    if result["status"] == "success":
-        plaintext = bytes.fromhex(result["plaintext"]).decode()
+    if len(ct_bytes) != 16 or len(key_bytes) != 16 or len(nonce_bytes) != 16:
         await interaction.response.send_message(
-            f"🔓 **Decryption Result**\nPT = `{plaintext}`"
+            "❌ Ciphertext, key, dan nonce harus 16 byte",
+            ephemeral=True
         )
-    else:
-        await interaction.response.send_message("❌ Authentication failed")
+        return
+
+    frame = build_frame(
+        MODE_DECRYPT,
+        key_bytes,
+        nonce_bytes,
+        ct_bytes
+    )
+
+    try:
+        response = send_to_fpga(frame)
+    except FPGAConnectionError:
+        await interaction.response.send_message(
+            "❌ FPGA tidak terhubung",
+            ephemeral=True
+        )
+        return
+    except FPGAProtocolError as e:
+        await interaction.response.send_message(
+            f"❌ Protokol UART error: {e}",
+            ephemeral=True
+        )
+        return
+
+    plaintext = response[33:49].rstrip(b"\x00").decode(errors="ignore")
+
+    await interaction.response.send_message(
+        f"🔓 **Plaintext**: `{plaintext}`"
+    )
+
 
 bot.run(TOKEN)
